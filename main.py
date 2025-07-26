@@ -1,171 +1,220 @@
 import os
-import discord
-import json
 import asyncio
-import random
+import discord
 from discord.ext import commands
-from datetime import datetime, timedelta
-from keep_alive import run
+from discord.ui import View, Modal, TextInput, Button
+from datetime import datetime
+import random
+import json
 
-TOKEN = os.environ["DISCORD_TOKEN"]
-ADMIN_ID = 1115314183731421274
-
-intents = discord.Intents.default()
-intents.message_content = True
-intents.messages = True
-intents.guilds = True
-intents.members = True
-
+intents = discord.Intents.all()
 bot = commands.Bot(command_prefix='.', intents=intents)
 
-if not os.path.exists("data.json"):
-    with open("data.json", "w") as f:
+TOKEN = os.getenv("DISCORD_TOKEN")
+ADMIN_ID = 1115314183731421274
+THUE = 0.02
+TIEN_MOI = 10000
+TIEN_DAILY = 5000
+LICH_SU_CAU = []
+CUOC_HIEN_TAI = {}
+CHO_PHEP_DAT_CUOC = False
+DANG_CHO_KET_QUA = False
+GAME_DANG_CHAY = False
+VI_ADMIN = 0
+
+# ======================= DATABASE =========================
+
+if not os.path.exists("data"):
+    os.mkdir("data")
+USERS_FILE = "data/users.json"
+if not os.path.exists(USERS_FILE):
+    with open(USERS_FILE, "w") as f:
         json.dump({}, f)
 
-def load_data():
-    with open("data.json", "r") as f:
+def load_users():
+    with open(USERS_FILE) as f:
         return json.load(f)
 
-def save_data(data):
-    with open("data.json", "w") as f:
-        json.dump(data, f, indent=4)
+def save_users(users):
+    with open(USERS_FILE, "w") as f:
+        json.dump(users, f)
 
-game_message = None
+def get_balance(user_id):
+    users = load_users()
+    if str(user_id) not in users:
+        users[str(user_id)] = {"balance": TIEN_MOI, "last_daily": ""}
+        save_users(users)
+    return users[str(user_id)]["balance"]
 
-@bot.event
-async def on_ready():
-    print(f"✅ Bot đã đăng nhập thành {bot.user.name}")
-    bot.loop.create_task(xu_ly_tu_dong())
+def update_balance(user_id, amount):
+    users = load_users()
+    if str(user_id) not in users:
+        users[str(user_id)] = {"balance": TIEN_MOI, "last_daily": ""}
+    users[str(user_id)]["balance"] += amount
+    save_users(users)
+
+def set_last_daily(user_id):
+    users = load_users()
+    if str(user_id) not in users:
+        users[str(user_id)] = {"balance": TIEN_MOI, "last_daily": ""}
+    users[str(user_id)]["last_daily"] = datetime.now().strftime("%Y-%m-%d")
+    save_users(users)
+
+def can_claim_daily(user_id):
+    users = load_users()
+    last = users.get(str(user_id), {}).get("last_daily", "")
+    return last != datetime.now().strftime("%Y-%m-%d")
+
+# ======================= LỆNH =============================
 
 @bot.command()
 async def game(ctx):
-    if ctx.author.id != ADMIN_ID:
-        return await ctx.send("❌ Chỉ admin được phép chạy lệnh này.")
-    
-    await bat_dau_phien(ctx.channel)
-
-async def bat_dau_phien(channel):
-    data = load_data()
-    if "lich_su" not in data:
-        data["lich_su"] = []
-
-    data["game"] = {
-        "trang_thai": "cho_dat_cuoc",
-        "cuoc": {},
-        "ket_qua": None,
-        "bat_dau": datetime.utcnow().isoformat(),
-        "ep_ket_qua": None,
-        "ep_no_hu": None
-    }
-    save_data(data)
-
-    view = discord.ui.View(timeout=None)
-    view.add_item(discord.ui.Button(label="🎯 Ra TÀI", style=discord.ButtonStyle.success, custom_id="tai"))
-    view.add_item(discord.ui.Button(label="🎯 Ra XỈU", style=discord.ButtonStyle.primary, custom_id="xiu"))
-    view.add_item(discord.ui.Button(label="💥 Chọn người nổ hũ", style=discord.ButtonStyle.danger, custom_id="nohu"))
-
-    global game_message
-    cau = ' | '.join(data["lich_su"][-10:]) if data["lich_su"] else "Chưa có lịch sử"
-    embed = discord.Embed(title="🎲 BẮT ĐẦU PHIÊN MỚI", description="Dùng `.cuoc tai 10000` hoặc `.cuoc xiu 10k` để đặt cược\nMỗi phiên kéo dài **60 giây**\n\n💹 **Lịch sử cầu gần nhất:**\n" + cau, color=0x00ffcc)
-    game_message = await channel.send(embed=embed, view=view)
-
-async def xu_ly_tu_dong():
-    while True:
-        await asyncio.sleep(5)
-        data = load_data()
-
-        if "game" in data and data["game"]["trang_thai"] == "cho_dat_cuoc":
-            bat_dau = datetime.fromisoformat(data["game"]["bat_dau"])
-            if datetime.utcnow() - bat_dau > timedelta(seconds=60):
-                data["game"]["trang_thai"] = "ket_thuc"
-                ep_kq = data["game"].get("ep_ket_qua")
-                ket_qua = ep_kq if ep_kq in ["tai", "xiu"] else random.choice(["tai", "xiu"])
-                data["game"]["ket_qua"] = ket_qua
-
-                thong_bao = f"🎯 **KẾT QUẢ:** `{ket_qua.upper()}`\n"
-                for uid, thongtin in data["game"]["cuoc"].items():
-                    tien = thongtin["tien"]
-                    lua_chon = thongtin["lua_chon"]
-                    if uid not in data: continue
-                    if lua_chon == ket_qua:
-                        data[uid]["coin"] += int(tien * 0.98)
-                        thong_bao += f"<@{uid}> ✅ Thắng +{int(tien * 0.98)} xu\n"
-                    else:
-                        thong_bao += f"<@{uid}> ❌ Thua -{tien} xu\n"
-
-                data["lich_su"].append(ket_qua.upper())
-                data["lich_su"] = data["lich_su"][-20:]  # giới hạn lịch sử 20 kết quả
-                save_data(data)
-
-                if game_message:
-                    await game_message.reply(thong_bao)
-
-                await asyncio.sleep(2)
-                channel = game_message.channel if game_message else None
-                if channel:
-                    await bat_dau_phien(channel)
+    global GAME_DANG_CHAY
+    if GAME_DANG_CHAY:
+        await ctx.send("Game đang chạy rồi.")
+        return
+    GAME_DANG_CHAY = True
+    await start_game_loop(ctx.channel)
 
 @bot.command()
-async def cuoc(ctx, lua_chon: str, so_tien):
-    data = load_data()
-    user_id = str(ctx.author.id)
+async def off(ctx):
+    global GAME_DANG_CHAY
+    if ctx.author.id != ADMIN_ID:
+        return
+    GAME_DANG_CHAY = False
+    await ctx.send("❌ Game đã tắt.")
 
-    if user_id not in data:
-        data[user_id] = {"coin": 10000}
+@bot.command()
+async def stk(ctx):
+    balance = get_balance(ctx.author.id)
+    await ctx.send(f"Số dư của bạn là **{balance:,} xu**")
 
-    so_tien = str(so_tien).lower().replace("k", "000")
-    try:
-        so_tien = int(so_tien)
-    except:
-        return await ctx.send("❌ Số tiền không hợp lệ!")
+@bot.command()
+async def give(ctx, member: discord.Member, amount: int):
+    if amount <= 0:
+        await ctx.send("Số tiền không hợp lệ.")
+        return
+    if get_balance(ctx.author.id) < amount:
+        await ctx.send("Bạn không đủ tiền.")
+        return
+    update_balance(ctx.author.id, -amount)
+    update_balance(member.id, amount)
+    await ctx.send(f"✉️ Đã chuyển {amount:,} xu cho {member.mention}")
 
-    if so_tien <= 0 or so_tien > data[user_id]["coin"]:
-        return await ctx.send("❌ Số xu không đủ hoặc không hợp lệ!")
-
-    if "game" not in data or data["game"]["trang_thai"] != "cho_dat_cuoc":
-        return await ctx.send("❌ Hiện không có phiên cược nào.")
-
-    lua_chon = lua_chon.lower()
-    if lua_chon not in ["tai", "xiu"]:
-        return await ctx.send("❌ Chỉ được chọn `tai` hoặc `xiu`.")
-
-    data[user_id]["coin"] -= so_tien
-    data["game"]["cuoc"][user_id] = {"lua_chon": lua_chon, "tien": so_tien}
-    save_data(data)
-    await ctx.send(f"✅ <@{user_id}> đã cược **{so_tien} xu** vào **{lua_chon.upper()}**")
+@bot.command()
+async def addmoney(ctx, member: discord.Member, amount: int):
+    if ctx.author.id != ADMIN_ID:
+        return
+    update_balance(member.id, amount)
+    await ctx.send(f"✨ Đã cộng {amount:,} xu cho {member.mention}")
 
 @bot.command()
 async def daily(ctx):
-    data = load_data()
-    user_id = str(ctx.author.id)
-    if user_id not in data:
-        data[user_id] = {"coin": 10000}
-        await ctx.send("🎉 Bạn là người chơi mới! Đã nhận 10.000 xu.")
-    else:
-        data[user_id]["coin"] += 2000
-        await ctx.send("🎁 Bạn đã nhận 2.000 xu hôm nay!")
-
-    save_data(data)
-
-@bot.event
-async def on_interaction(interaction):
-    if interaction.user.id != ADMIN_ID:
+    if not can_claim_daily(ctx.author.id):
+        await ctx.send("⏰ Bạn đã nhận daily hôm nay rồi.")
         return
+    update_balance(ctx.author.id, TIEN_DAILY)
+    set_last_daily(ctx.author.id)
+    await ctx.send(f"✨ Bạn đã nhận {TIEN_DAILY:,} xu daily hôm nay.")
 
-    data = load_data()
-    if "game" not in data or data["game"]["trang_thai"] != "cho_dat_cuoc":
-        return await interaction.response.send_message("❌ Không có phiên cược nào đang diễn ra!", ephemeral=True)
+# ======================= GAME LOOP =========================
 
-    if interaction.data["custom_id"] == "tai":
-        data["game"]["ep_ket_qua"] = "tai"
-        await interaction.response.send_message("✅ Đã ép kết quả ra **TÀI**", ephemeral=True)
-    elif interaction.data["custom_id"] == "xiu":
-        data["game"]["ep_ket_qua"] = "xiu"
-        await interaction.response.send_message("✅ Đã ép kết quả ra **XỈU**", ephemeral=True)
-    elif interaction.data["custom_id"] == "nohu":
-        await interaction.response.send_message("💥 Tính năng chọn người nổ hũ sẽ được cập nhật sau!", ephemeral=True)
+async def start_game_loop(channel):
+    global CHO_PHEP_DAT_CUOC, CUOC_HIEN_TAI, DANG_CHO_KET_QUA, LICH_SU_CAU, VI_ADMIN
 
-    save_data(data)
+    while GAME_DANG_CHAY:
+        CUOC_HIEN_TAI = {"tai": {}, "xiu": {}}
+        CHO_PHEP_DAT_CUOC = True
+        DANG_CHO_KET_QUA = False
 
-run()
+        embed = discord.Embed(
+            title="🎲 BẮT ĐẦU PHIÊN MỚI",
+            description="⏳ Bạn có 60 giây để cược!",
+            color=0x00ffff
+        )
+        tai_count = sum(CUOC_HIEN_TAI['tai'].values())
+        xiu_count = sum(CUOC_HIEN_TAI['xiu'].values())
+        embed.add_field(name="⭕ Cầu gần đây", value=render_cau(), inline=False)
+        embed.add_field(name="🔴 Tài", value=f"{tai_count:,} xu (0 người)", inline=True)
+        embed.add_field(name="⚪ Xỉu", value=f"{xiu_count:,} xu (0 người)", inline=True)
+
+        view = ViewDatCuoc()
+        await channel.send(embed=embed, view=view)
+
+        await asyncio.sleep(60)
+
+        CHO_PHEP_DAT_CUOC = False
+        DANG_CHO_KET_QUA = True
+        await asyncio.sleep(2)
+
+        result = random.choice(["tai", "xiu"])
+        LICH_SU_CAU.append(result)
+        if len(LICH_SU_CAU) > 8:
+            LICH_SU_CAU.pop(0)
+
+        winners = CUOC_HIEN_TAI[result]
+        for uid, amount in winners.items():
+            win = amount * 2 * (1 - THUE)
+            update_balance(uid, win)
+            VI_ADMIN += int(amount * 2 * THUE)
+
+        await channel.send(f"✨ Kết quả: **{result.upper()}**! {len(winners)} người thắng.")
+
+        await asyncio.sleep(5)
+
+# ====================== VIEW ĐẶT CƯỢC ========================
+
+class ViewDatCuoc(View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="Cược Tài", style=discord.ButtonStyle.red)
+    async def cuoc_tai(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.handle_cuoc(interaction, "tai")
+
+    @discord.ui.button(label="Cược Xỉu", style=discord.ButtonStyle.grey)
+    async def cuoc_xiu(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.handle_cuoc(interaction, "xiu")
+
+    async def handle_cuoc(self, interaction, side):
+        if not CHO_PHEP_DAT_CUOC:
+            await interaction.response.send_message("❌ Phiên đã đóng cược.", ephemeral=True)
+            return
+        modal = ModalNhapTien(side)
+        await interaction.response.send_modal(modal)
+
+class ModalNhapTien(Modal, title="Nhập số tiền muốn cược"):
+    def __init__(self, side):
+        super().__init__()
+        self.side = side
+        self.so_tien = TextInput(label="Số xu muốn cược", placeholder="VD: 1000")
+        self.add_item(self.so_tien)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            amount = int(str(self.so_tien.value).lower().replace("k", "000"))
+        except:
+            await interaction.response.send_message("❌ Số tiền không hợp lệ.", ephemeral=True)
+            return
+        if amount <= 0:
+            await interaction.response.send_message("❌ Số tiền không hợp lệ.", ephemeral=True)
+            return
+        if get_balance(interaction.user.id) < amount:
+            await interaction.response.send_message("❌ Bạn không đủ xu.", ephemeral=True)
+            return
+        CUOC_HIEN_TAI[self.side][interaction.user.id] = CUOC_HIEN_TAI[self.side].get(interaction.user.id, 0) + amount
+        update_balance(interaction.user.id, -amount)
+        await interaction.response.send_message(f"✅ Bạn đã cược **{amount:,} xu** vào **{self.side.upper()}**!", ephemeral=True)
+
+# ======================= CẦU =========================
+
+def render_cau():
+    symbols = []
+    for kq in LICH_SU_CAU:
+        if kq == "tai":
+            symbols.append("🔴")
+        else:
+            symbols.append("⚪")
+    return " ".join(symbols)
+
 bot.run(TOKEN)
