@@ -4,11 +4,12 @@ import discord
 from discord.ext import commands
 from discord.ui import Button, View, Modal, TextInput
 from discord import ButtonStyle, Interaction
-from datetime import datetime, timedelta
+from datetime import datetime
 import random
 import uvicorn
 from fastapi import FastAPI
 from threading import Thread
+import time
 
 # ========== FASTAPI KEEP ALIVE ==========
 app = FastAPI()
@@ -24,7 +25,8 @@ def start_fastapi():
 intents = discord.Intents.all()
 bot = commands.Bot(command_prefix=".", intents=intents)
 
-TOKEN = os.getenv("DISCORD_TOKEN")  # hoặc thay = "token_của_bạn" để test nhanh
+# ====== TOKEN: Ưu tiên lấy từ biến môi trường, fallback dùng token thủ công để test ======
+TOKEN = os.getenv("DISCORD_TOKEN") or "dán_token_bot_vào_đây_nếu_test"
 ADMIN_ID = 1115314183731421274
 
 user_data = {}
@@ -227,7 +229,8 @@ async def off(ctx):
         is_game_active = False
         await ctx.send("🛑 Game đã tắt.")
 
-# ========== CHẠY CẢ FASTAPI + BOT ==========
+# ========== CHẠY CẢ FASTAPI + DISCORD BOT ==========
 if __name__ == "__main__":
     Thread(target=start_fastapi).start()
+    time.sleep(5)  # ⏳ Đợi FastAPI khởi động xong
     bot.run(TOKEN)
