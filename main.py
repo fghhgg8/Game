@@ -2,24 +2,40 @@ import os
 import json
 import discord
 import asyncio
-from discord.ext import commands, tasks
-from datetime import datetime, timedelta
+from discord.ext import commands
+from datetime import datetime
 import random
+import uvicorn
+from fastapi import FastAPI
+from threading import Thread
 
+# ========== FASTAPI KEEP ALIVE ==========
+app = FastAPI()
+
+@app.get("/")
+async def root():
+    return {"message": "Bot is running"}
+
+def start_fastapi():
+    uvicorn.run(app, host="0.0.0.0", port=8080)
+
+Thread(target=start_fastapi, daemon=True).start()
+
+# ========== DISCORD BOT ==========
 intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix='.', intents=intents)
 
 DATA_FILE = "users.json"
-GAME_CHANNEL_ID = 1234567890  # Thay bằng ID kênh game thật
+GAME_CHANNEL_ID = 1234567890  # Thay bằng ID thật
 ADMIN_ID = 1115314183731421274
-BET_DURATION = 60  # thời gian mỗi phiên
+BET_DURATION = 60  # giây mỗi phiên
 
 users = {}
 current_game = {"active": False}
 bet_history = []
 
-# ================== LOAD / SAVE ==================
+# ========== LOAD / SAVE ==========
 
 def load_users():
     global users
@@ -31,7 +47,7 @@ def save_users():
     with open(DATA_FILE, 'w') as f:
         json.dump(users, f)
 
-# ================== GAME LOGIC ==================
+# ========== GAME LOGIC ==========
 
 def get_result():
     return random.choice(["tài", "xỉu"])
@@ -43,12 +59,10 @@ def get_cau_display():
 async def payout():
     total_tai = sum(u['bet'] for u in current_game['bets'] if u['choice'] == 'tài')
     total_xiu = sum(u['bet'] for u in current_game['bets'] if u['choice'] == 'xỉu')
-
     result = current_game.get("result") or get_result()
     current_game["result"] = result
     bet_history.append(result)
     bet_history[:] = bet_history[-20:]
-
     winners = []
     losers = []
     tax_total = 0
@@ -70,67 +84,59 @@ async def payout():
         users[str(ADMIN_ID)]["balance"] += tax_total
 
     save_users()
-
     return result, winners, losers
 
-# ================== COMMANDS ==================
+# ========== BOT EVENTS ==========
 
 @bot.event
 async def on_ready():
     print(f"Bot đã đăng nhập với tên {bot.user}")
     load_users()
 
+# ========== COMMANDS ==========
+
 @bot.command()
 async def game(ctx):
     if ctx.author.id != ADMIN_ID:
         return
-
     if current_game["active"]:
         await ctx.send("Phiên đang diễn ra.")
         return
 
     current_game.update({"active": True, "bets": [], "result": None})
     await send_game_message(ctx)
-
     await asyncio.sleep(BET_DURATION)
 
     if not current_game.get("result"):
         current_game["result"] = get_result()
 
     result, winners, losers = await payout()
-
     desc = f"Kết quả: **{result.upper()}** 🎲\n"
     desc += f"Thắng: {', '.join([f'<@{uid}> (+{amt})' for uid, amt in winners])}\n"
     desc += f"Thua: {', '.join([f'<@{uid}>' for uid in losers])}" if losers else ""
 
     embed = discord.Embed(title="✅ Kết thúc phiên", description=desc, color=0x00ff00)
     embed.set_footer(text=get_cau_display())
-
     await ctx.send(embed=embed)
     current_game["active"] = False
 
 @bot.command()
-async def tai(ctx):
-    await handle_bet(ctx, "tài")
+async def tai(ctx): await handle_bet(ctx, "tài")
 
 @bot.command()
-async def xiu(ctx):
-    await handle_bet(ctx, "xỉu")
+async def xiu(ctx): await handle_bet(ctx, "xỉu")
 
 async def handle_bet(ctx, choice):
     user_id = str(ctx.author.id)
     if not current_game.get("active"):
         await ctx.send("Chưa có phiên nào diễn ra. Admin hãy dùng `.game` để bắt đầu.")
         return
-
     if user_id not in users:
         users[user_id] = {"balance": 10000}
 
-    def check(m):
-        return m.author == ctx.author and m.channel == ctx.channel
-
     await ctx.send(f"{ctx.author.mention}, nhập số tiền cược ({choice.upper()}):")
 
+    def check(m): return m.author == ctx.author and m.channel == ctx.channel
     try:
         msg = await bot.wait_for("message", timeout=20, check=check)
         bet_amount = int(msg.content.replace("k", "000").lower())
@@ -220,7 +226,6 @@ async def off(ctx):
     current_game["active"] = False
     await ctx.send("🛑 Game đã bị tắt bởi admin.")
 
-# ================== START BOT ==================
-
+# ========== START BOT ==========
 TOKEN = os.environ.get("TOKEN")
 bot.run(TOKEN)
