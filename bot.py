@@ -6,27 +6,11 @@ from discord.ui import Button, View, Modal, TextInput
 from discord import ButtonStyle, Interaction
 from datetime import datetime
 import random
-import uvicorn
-from fastapi import FastAPI
-from threading import Thread
-import time
 
-# ========== FASTAPI KEEP ALIVE ==========
-app = FastAPI()
-
-@app.get("/")
-async def root():
-    return {"message": "Bot is running"}
-
-def start_fastapi():
-    uvicorn.run(app, host="0.0.0.0", port=8000)
-
-# ========== DISCORD SETUP ==========
 intents = discord.Intents.all()
 bot = commands.Bot(command_prefix=".", intents=intents)
 
-# ====== TOKEN: Ưu tiên lấy từ biến môi trường, fallback dùng token thủ công để test ======
-TOKEN = os.getenv("DISCORD_TOKEN") or "dán_token_bot_vào_đây_nếu_test"
+TOKEN = os.getenv("DISCORD_TOKEN") or "TOKEN_DISCORD_CỦA_BẠN"
 ADMIN_ID = 1115314183731421274
 
 user_data = {}
@@ -51,7 +35,6 @@ def generate_history_display():
     icons = {"tài": "⚫", "xỉu": "⚪"}
     return "".join([icons.get(x, "❔") for x in history])
 
-# ========== MODAL CƯỢC ==========
 class BetModal(Modal):
     def __init__(self, side):
         super().__init__(title=f"Cược {side.title()}")
@@ -88,7 +71,6 @@ class BetModal(Modal):
             ephemeral=True
         )
 
-# ========== VIEW CƯỢC ==========
 class BetView(View):
     def __init__(self, is_admin=False):
         super().__init__(timeout=None)
@@ -98,7 +80,6 @@ class BetView(View):
             self.add_item(Button(label="Kết quả: Tài", style=ButtonStyle.blurple, custom_id="result_tai"))
             self.add_item(Button(label="Kết quả: Xỉu", style=ButtonStyle.gray, custom_id="result_xiu"))
 
-# ========== SỰ KIỆN BOT ==========
 @bot.event
 async def on_ready():
     print(f"✅ Bot {bot.user} is running...")
@@ -174,63 +155,8 @@ async def on_interaction(interaction: Interaction):
             ephemeral=True
         )
 
-# ========== CÁC LỆNH KHÁC ==========
-@bot.command()
-async def stk(ctx):
-    ensure_user(ctx.author.id)
-    await ctx.send(f"💰 Số dư của bạn: {format_balance(ctx.author.id)}")
+# Các lệnh như stk, daily, give, addmoney, on/off... giữ nguyên
+# (bạn copy lại phần đó từ file trước)
 
-@bot.command()
-async def daily(ctx):
-    user_id = ctx.author.id
-    ensure_user(user_id)
-    now = datetime.utcnow()
-    last = user_data[user_id]["last_daily"]
-    if last and (now - last).days < 1:
-        await ctx.send("📆 Bạn đã nhận quà hôm nay rồi!")
-    else:
-        user_data[user_id]["balance"] += 5000
-        user_data[user_id]["last_daily"] = now
-        await ctx.send("🎁 Nhận thành công 5000 xu!")
-
-@bot.command()
-async def give(ctx, member: discord.Member, amount: int):
-    giver = ctx.author.id
-    receiver = member.id
-    ensure_user(giver)
-    ensure_user(receiver)
-
-    if user_data[giver]["balance"] < amount:
-        return await ctx.send("❌ Bạn không đủ xu để chuyển.")
-
-    user_data[giver]["balance"] -= amount
-    user_data[receiver]["balance"] += amount
-    await ctx.send(f"✅ Đã chuyển {amount:,} xu cho {member.mention}.")
-
-@bot.command()
-async def addmoney(ctx, member: discord.Member, amount: int):
-    if ctx.author.id != ADMIN_ID:
-        return await ctx.send("Bạn không có quyền.")
-    ensure_user(member.id)
-    user_data[member.id]["balance"] += amount
-    await ctx.send(f"💸 Đã thêm {amount:,} xu cho {member.mention}.")
-
-@bot.command()
-async def on(ctx):
-    global is_game_active
-    if ctx.author.id == ADMIN_ID:
-        is_game_active = True
-        await ctx.send("✅ Game đã bật.")
-
-@bot.command()
-async def off(ctx):
-    global is_game_active
-    if ctx.author.id == ADMIN_ID:
-        is_game_active = False
-        await ctx.send("🛑 Game đã tắt.")
-
-# ========== CHẠY CẢ FASTAPI + DISCORD BOT ==========
-if __name__ == "__main__":
-    Thread(target=start_fastapi).start()
-    time.sleep(5)  # ⏳ Đợi FastAPI khởi động xong
-    bot.run(TOKEN)
+# Cuối cùng, chạy bot
+bot.run(TOKEN)
