@@ -3,6 +3,8 @@ import json
 import discord
 import asyncio
 from discord.ext import commands
+from discord import ButtonStyle, Interaction
+from discord.ui import Button, View
 from datetime import datetime
 import random
 import uvicorn
@@ -36,7 +38,6 @@ current_game = {"active": False}
 bet_history = []
 
 # ========== LOAD / SAVE ==========
-
 def load_users():
     global users
     if os.path.exists(DATA_FILE):
@@ -48,7 +49,6 @@ def save_users():
         json.dump(users, f)
 
 # ========== GAME LOGIC ==========
-
 def get_result():
     return random.choice(["tài", "xỉu"])
 
@@ -87,18 +87,22 @@ async def payout():
     return result, winners, losers
 
 # ========== BOT EVENTS ==========
-
 @bot.event
 async def on_ready():
     print(f"Bot đã đăng nhập với tên {bot.user}")
     load_users()
+    asyncio.create_task(auto_game_loop())
 
-# ========== COMMANDS ==========
+# ========== GAME LOOP ==========
+async def auto_game_loop():
+    await bot.wait_until_ready()
+    channel = bot.get_channel(GAME_CHANNEL_ID)
+    while True:
+        if not current_game["active"]:
+            await start_new_game(channel)
+        await asyncio.sleep(5)
 
-@bot.command()
-async def game(ctx):
-    if ctx.author.id != ADMIN_ID:
-        return
+async def start_new_game(ctx):
     if current_game["active"]:
         await ctx.send("Phiên đang diễn ra.")
         return
@@ -111,45 +115,61 @@ async def game(ctx):
         current_game["result"] = get_result()
 
     result, winners, losers = await payout()
+
     desc = f"Kết quả: **{result.upper()}** 🎲\n"
     desc += f"Thắng: {', '.join([f'<@{uid}> (+{amt})' for uid, amt in winners])}\n"
-    desc += f"Thua: {', '.join([f'<@{uid}>' for uid in losers])}" if losers else ""
+    if losers:
+        desc += f"Thua: {', '.join([f'<@{uid}>' for uid in losers])}"
 
     embed = discord.Embed(title="✅ Kết thúc phiên", description=desc, color=0x00ff00)
     embed.set_footer(text=get_cau_display())
     await ctx.send(embed=embed)
     current_game["active"] = False
 
-@bot.command()
-async def tai(ctx): await handle_bet(ctx, "tài")
+# ========== BETTING BUTTONS ==========
+class BetView(View):
+    def __init__(self):
+        super().__init__(timeout=None)
 
-@bot.command()
-async def xiu(ctx): await handle_bet(ctx, "xỉu")
+    @discord.ui.button(label="Tài", style=ButtonStyle.success)
+    async def tai_button(self, interaction: Interaction, button: Button):
+        await handle_bet(interaction, "tài")
+
+    @discord.ui.button(label="Xỉu", style=ButtonStyle.danger)
+    async def xiu_button(self, interaction: Interaction, button: Button):
+        await handle_bet(interaction, "xỉu")
 
 async def handle_bet(ctx, choice):
-    user_id = str(ctx.author.id)
+    user = ctx.user if isinstance(ctx, Interaction) else ctx.author
+    user_id = str(user.id)
+
     if not current_game.get("active"):
-        await ctx.send("Chưa có phiên nào diễn ra. Admin hãy dùng `.game` để bắt đầu.")
+        await ctx.response.send_message("Chưa có phiên nào diễn ra.", ephemeral=True)
         return
+
     if user_id not in users:
         users[user_id] = {"balance": 10000}
 
-    await ctx.send(f"{ctx.author.mention}, nhập số tiền cược ({choice.upper()}):")
+    await ctx.response.send_message(f"{user.mention}, nhập số tiền cược ({choice.upper()}):", ephemeral=True)
 
-    def check(m): return m.author == ctx.author and m.channel == ctx.channel
+    def check(m):
+        return m.author.id == user.id and m.channel == ctx.channel
+
     try:
         msg = await bot.wait_for("message", timeout=20, check=check)
-        bet_amount = int(msg.content.replace("k", "000").lower())
+        bet_amount = int(msg.content.lower().replace("k", "000"))
+
         if bet_amount > users[user_id]["balance"]:
-            await ctx.send("❌ Không đủ xu.")
+            await ctx.followup.send("❌ Không đủ xu.", ephemeral=True)
             return
 
         users[user_id]["balance"] -= bet_amount
         current_game["bets"].append({"user": user_id, "choice": choice, "bet": bet_amount})
         save_users()
-        await ctx.send(f"✅ {ctx.author.mention} đã cược {bet_amount} vào **{choice.upper()}**.")
+        await ctx.followup.send(f"✅ {user.mention} đã cược {bet_amount} vào **{choice.upper()}**.", ephemeral=True)
+
     except asyncio.TimeoutError:
-        await ctx.send("⏰ Hết thời gian nhập số tiền.")
+        await ctx.followup.send("⏰ Hết thời gian nhập số tiền.", ephemeral=True)
 
 async def send_game_message(ctx):
     total_tai = sum(b['bet'] for b in current_game["bets"] if b["choice"] == "tài")
@@ -160,15 +180,20 @@ async def send_game_message(ctx):
     embed = discord.Embed(
         title="🎲 Mini game Tài Xỉu",
         description=(
-            f"Chọn cược bằng `.tai` hoặc `.xiu`\n"
-            f"⏱️ Thời gian cược: {BET_DURATION} giây\n\n"
+            f"⏱️ Thời gian cược: {BET_DURATION} giây\n"
             f"**Số người cược Tài:** {count_tai} | 💰 Tổng: {total_tai}\n"
-            f"**Số người cược Xỉu:** {count_xiu} | 💰 Tổng: {total_xiu}\n"
+            f"**Số người cược Xỉu:** {count_xiu} | 💰 Tổng: {total_xiu}"
         ),
         color=0x00ffff,
     )
     embed.set_footer(text=get_cau_display())
-    await ctx.send(embed=embed)
+    await ctx.send(embed=embed, view=BetView())
+
+# ========== COMMANDS ==========
+@bot.command()
+async def game(ctx):
+    if ctx.author.id == ADMIN_ID:
+        await start_new_game(ctx)
 
 @bot.command()
 async def stk(ctx):
