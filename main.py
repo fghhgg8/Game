@@ -1,163 +1,231 @@
-import discord
-from discord.ext import commands, tasks
-from discord.ui import Button, View
-import asyncio
-import random
-from datetime import datetime, timedelta
 import os
+import json
+import discord
+import asyncio
+from discord.ext import commands
+from discord import ButtonStyle, Interaction
+from discord.ui import Button, View, Modal, TextInput
+from datetime import datetime, timedelta
+import random
+import uvicorn
+from fastapi import FastAPI
+from threading import Thread
+
+# ========== FASTAPI KEEP ALIVE ==========
+
+app = FastAPI()
+
+@app.get("/")
+async def root():
+    return {"message": "Bot is running"}
+
+def start_fastapi():
+    uvicorn.run(app, host="0.0.0.0", port=8000)
+
+Thread(target=start_fastapi).start()
+
+# ========== DISCORD BOT SETUP ==========
 
 intents = discord.Intents.all()
-bot = commands.Bot(command_prefix='.', intents=intents)
+bot = commands.Bot(command_prefix=".", intents=intents)
 
+TOKEN = os.getenv("DISCORD_TOKEN")
 ADMIN_ID = 1115314183731421274
-GAME_CHANNEL_ID = 1398174558468706454
+CHANNEL_ID = 1398174558468706454
 
-user_balances = {}  # {user_id: balance}
-user_bets = {}       # {user_id: {"side": "tai"/"xiu", "amount": int}}
-betting_open = False
-game_result = None
+user_data = {}
+current_game = None
+is_game_active = True
 history = []
-admin_forced_result = None
 
-# ======================= HỖ TRỢ =========================
+# ========== HELPER FUNCTIONS ==========
 
-def get_balance(user_id):
-    return user_balances.get(user_id, 10000)
+def format_balance(user_id):
+    balance = user_data.get(user_id, {}).get("balance", 0)
+    return f"{balance:,} xu"
 
-def update_balance(user_id, amount):
-    user_balances[user_id] = get_balance(user_id) + amount
+def ensure_user(user_id):
+    if user_id not in user_data:
+        user_data[user_id] = {"balance": 10000, "last_daily": None}
 
-def render_history():
-    return " ".join(["🔴" if h == "tai" else "⚪" for h in history[-8:]])
+def update_history(result):
+    history.append(result)
+    if len(history) > 8:
+        history.pop(0)
 
-# ======================= GAME =========================
+def generate_history_display():
+    icons = {"tài": "⚫", "xỉu": "⚪"}
+    return "".join([icons.get(x, "❔") for x in history])
+
+# ========== MODAL FOR BET AMOUNT ==========
+
+class BetModal(Modal):
+    def __init__(self, side):
+        super().__init__(title=f"Cược {side.title()}")
+        self.side = side
+        self.amount = TextInput(label="Nhập số tiền cược", placeholder="VD: 10000 hoặc all")
+        self.add_item(self.amount)
+
+    async def on_submit(self, interaction: Interaction):
+        user_id = interaction.user.id
+        ensure_user(user_id)
+
+        amount_text = self.amount.value.lower().replace(",", "").replace(" ", "")
+        if amount_text == "all":
+            amount = user_data[user_id]["balance"]
+        else:
+            try:
+                amount = int(amount_text)
+            except:
+                await interaction.response.send_message("Số tiền không hợp lệ.", ephemeral=True)
+                return
+
+        if amount <= 0 or amount > user_data[user_id]["balance"]:
+            await interaction.response.send_message("Số dư không đủ.", ephemeral=True)
+            return
+
+        if not current_game:
+            await interaction.response.send_message("Chưa có phiên cược nào.", ephemeral=True)
+            return
+
+        user_data[user_id]["balance"] -= amount
+        current_game["bets"].append({"user_id": user_id, "amount": amount, "side": self.side})
+        await interaction.response.send_message(f"Bạn đã cược {amount:,} xu vào **{self.side.upper()}**.", ephemeral=True)
+
+# ========== VIEWS ==========
+
+class BetView(View):
+    def __init__(self, is_admin=False):
+        super().__init__(timeout=None)
+        self.add_item(Button(label="Cược Tài", style=ButtonStyle.green, custom_id="bet_tai"))
+        self.add_item(Button(label="Cược Xỉu", style=ButtonStyle.red, custom_id="bet_xiu"))
+        if is_admin:
+            self.add_item(Button(label="Kết quả: Tài", style=ButtonStyle.primary, custom_id="result_tai"))
+            self.add_item(Button(label="Kết quả: Xỉu", style=ButtonStyle.secondary, custom_id="result_xiu"))
+
+# ========== BOT EVENTS ==========
+
+@bot.event
+async def on_ready():
+    print(f"Bot {bot.user} is running...")
 
 @bot.command()
-async def start(ctx):
-    if ctx.author.id != ADMIN_ID:
-        return
-    await run_game_loop()
-
-async def run_game_loop():
-    global betting_open, user_bets, game_result
-
-    channel = bot.get_channel(GAME_CHANNEL_ID)
-    if not channel:
-        print("Không tìm thấy kênh.")
+async def taixiu(ctx):
+    global current_game, is_game_active
+    if not is_game_active:
+        await ctx.send("Game đang tắt. Dùng .on để bật lại.")
         return
 
-    while True:
-        user_bets.clear()
-        betting_open = True
+    current_game = {"bets": []}
+    is_admin = ctx.author.id == ADMIN_ID
 
-        embed = discord.Embed(title="🎲 PHIÊN MỚI", description="Bạn có 30s để đặt cược!", color=0x00ffcc)
-        embed.add_field(name="⭕ Cầu gần đây", value=render_history() or "Chưa có", inline=False)
+    embed = discord.Embed(title="🎲 BẮT ĐẦU PHIÊN MỚI", description="Bấm để cược", color=0x00ff00)
+    embed.add_field(name="Cầu 8 phiên gần nhất", value=generate_history_display(), inline=False)
+    embed.add_field(name="Tổng số người cược", value="0", inline=True)
+    embed.add_field(name="Tổng xu Tài/Xỉu", value="0 / 0", inline=True)
 
-        view = BettingView()
-        await channel.send(embed=embed, view=view)
+    await ctx.send(embed=embed, view=BetView(is_admin))
 
-        await asyncio.sleep(30)
-        betting_open = False
-
-        await asyncio.sleep(2)
-
-        # Kết quả
-        if admin_forced_result:
-            result = admin_forced_result
-        else:
-            result = random.choice(["tai", "xiu"])
-        game_result = result
-        history.append(result)
-        if len(history) > 8:
-            history.pop(0)
-
-        winners = [uid for uid, v in user_bets.items() if v["side"] == result]
-        losers = [uid for uid, v in user_bets.items() if v["side"] != result]
-
-        for uid in winners:
-            bet = user_bets[uid]["amount"]
-            win = int(bet * 2 * 0.98)  # thuế 2%
-            update_balance(uid, win)
-
-        msg = f"KẾT QUẢ: **{result.upper()}**\n"
-        msg += f"✅ {len(winners)} người thắng\n❌ {len(losers)} người thua"
-
-        await channel.send(msg)
-        await asyncio.sleep(5)
-
-# =================== VIEW ====================
-
-class BettingView(View):
-    def __init__(self):
-        super().__init__(timeout=None)
-
-    @discord.ui.button(label="Cược Tài", style=discord.ButtonStyle.success, custom_id="bet_tai")
-    async def bet_tai(self, interaction: discord.Interaction, button: Button):
-        await handle_bet(interaction, "tai")
-
-    @discord.ui.button(label="Cược Xỉu", style=discord.ButtonStyle.danger, custom_id="bet_xiu")
-    async def bet_xiu(self, interaction: discord.Interaction, button: Button):
-        await handle_bet(interaction, "xiu")
-
-async def handle_bet(interaction: discord.Interaction, side):
-    global betting_open
-    if not betting_open:
-        await interaction.response.send_message("❌ Phiên đã kết thúc!", ephemeral=True)
+@bot.event
+async def on_interaction(interaction: Interaction):
+    if not interaction.data or not interaction.data.get("custom_id"):
         return
 
     user_id = interaction.user.id
-    balance = get_balance(user_id)
+    ensure_user(user_id)
 
-    await interaction.response.send_message(
-        f"💰 Nhập số tiền cược (số xu bạn đang có: {balance:,}):", ephemeral=True)
+    cid = interaction.data["custom_id"]
 
-    def check(m):
-        return m.author.id == user_id and m.channel == interaction.channel
+    if cid in ["bet_tai", "bet_xiu"]:
+        await interaction.response.send_modal(BetModal("tài" if cid == "bet_tai" else "xỉu"))
 
-    try:
-        msg = await bot.wait_for("message", timeout=15, check=check)
-        try:
-            amount = int(str(msg.content).lower().replace("k", "000"))
-        except:
-            await interaction.followup.send("❌ Số tiền không hợp lệ.", ephemeral=True)
-            return
+    elif cid.startswith("result_") and user_id == ADMIN_ID:
+        side = "tài" if cid == "result_tai" else "xỉu"
+        winners = []
+        total_tax = 0
+        result_str = f"🎉 Kết quả phiên: **{side.upper()}**\n"
 
-        if amount <= 0 or amount > balance:
-            await interaction.followup.send("❌ Bạn không đủ xu hoặc số tiền không hợp lệ.", ephemeral=True)
-            return
+        for bet in current_game["bets"]:
+            uid = bet["user_id"]
+            if bet["side"] == side:
+                win = bet["amount"] * 2
+                tax = int(win * 0.02)
+                net = win - tax
+                user_data[uid]["balance"] += net
+                total_tax += tax
+                winners.append((uid, net))
 
-        user_bets[user_id] = {"side": side, "amount": amount}
-        update_balance(user_id, -amount)
-        await interaction.followup.send(f"✅ Bạn đã cược {amount:,} xu vào **{side.upper()}**!", ephemeral=True)
-    except asyncio.TimeoutError:
-        await interaction.followup.send("⏰ Hết thời gian nhập cược.", ephemeral=True)
+        update_history(side)
 
-# =================== TIỆN ÍCH ====================
+        for uid, won in winners:
+            user = await bot.fetch_user(uid)
+            await user.send(f"Bạn thắng {won:,} xu từ phiên vừa rồi!")
+
+        current_game.clear()
+        admin_user = await bot.fetch_user(ADMIN_ID)
+        ensure_user(ADMIN_ID)
+        user_data[ADMIN_ID]["balance"] += total_tax
+
+        await interaction.response.send_message(result_str + f"Tổng thuế {total_tax:,} xu gửi vào ví admin.", ephemeral=True)
+
+# ========== COMMANDS ==========
 
 @bot.command()
-async def balance(ctx):
-    bal = get_balance(ctx.author.id)
-    await ctx.send(f"💰 Số dư của bạn là **{bal:,} xu**")
+async def stk(ctx):
+    ensure_user(ctx.author.id)
+    await ctx.send(f"💰 Số dư: {format_balance(ctx.author.id)}")
 
 @bot.command()
-async def force(ctx, result):
-    global admin_forced_result
+async def daily(ctx):
+    user_id = ctx.author.id
+    ensure_user(user_id)
+    now = datetime.utcnow()
+    last = user_data[user_id].get("last_daily")
+
+    if last and (now - last).days < 1:
+        await ctx.send("Bạn đã nhận hôm nay rồi!")
+    else:
+        user_data[user_id]["balance"] += 5000
+        user_data[user_id]["last_daily"] = now
+        await ctx.send("🎁 Nhận 5000 xu thành công!")
+
+@bot.command()
+async def give(ctx, member: discord.Member, amount: int):
+    giver = ctx.author.id
+    receiver = member.id
+    ensure_user(giver)
+    ensure_user(receiver)
+
+    if user_data[giver]["balance"] < amount:
+        await ctx.send("Không đủ xu.")
+        return
+
+    user_data[giver]["balance"] -= amount
+    user_data[receiver]["balance"] += amount
+    await ctx.send(f"Đã chuyển {amount:,} xu cho {member.mention}.")
+
+@bot.command()
+async def addmoney(ctx, member: discord.Member, amount: int):
     if ctx.author.id != ADMIN_ID:
         return
-    if result.lower() not in ["tai", "xiu"]:
-        await ctx.send("Chỉ có thể ép 'tai' hoặc 'xiu'")
-        return
-    admin_forced_result = result.lower()
-    await ctx.send(f"✅ Đã ép kết quả phiên sau là **{admin_forced_result.upper()}**")
+    ensure_user(member.id)
+    user_data[member.id]["balance"] += amount
+    await ctx.send(f"Đã thêm {amount:,} xu cho {member.mention}.")
 
 @bot.command()
-async def unforce(ctx):
-    global admin_forced_result
-    if ctx.author.id != ADMIN_ID:
-        return
-    admin_forced_result = None
-    await ctx.send("❌ Đã hủy ép kết quả.")
+async def off(ctx):
+    global is_game_active
+    if ctx.author.id == ADMIN_ID:
+        is_game_active = False
+        await ctx.send("🛑 Game đã bị tắt.")
 
-# =================== CHẠY BOT ====================
+@bot.command()
+async def on(ctx):
+    global is_game_active
+    if ctx.author.id == ADMIN_ID:
+        is_game_active = True
+        await ctx.send("✅ Game đã được bật.")
 
-bot.run(os.getenv("DISCORD_TOKEN"))
+# ========== RUN BOT ==========
+
+bot.run(TOKEN)
