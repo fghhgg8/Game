@@ -7,7 +7,7 @@ from discord.ext import commands
 from datetime import datetime, timedelta
 from keep_alive import run
 
-TOKEN = os.environ.get("DISCORD_TOKEN")
+TOKEN = os.environ["DISCORD_TOKEN"]
 ADMIN_ID = 1115314183731421274
 
 intents = discord.Intents.default()
@@ -30,20 +30,24 @@ def save_data(data):
     with open("data.json", "w") as f:
         json.dump(data, f, indent=4)
 
+game_message = None
+
 @bot.event
 async def on_ready():
     print(f"✅ Bot đã đăng nhập thành {bot.user.name}")
     bot.loop.create_task(xu_ly_tu_dong())
 
 @bot.command()
-async def taixiu(ctx):
-    data = load_data()
-    user_id = str(ctx.author.id)
+async def game(ctx):
+    if ctx.author.id != ADMIN_ID:
+        return await ctx.send("❌ Chỉ admin được phép chạy lệnh này.")
+    
+    await bat_dau_phien(ctx.channel)
 
-    if user_id not in data:
-        data[user_id] = {"coin": 10000}
-        save_data(data)
-        await ctx.send(f"Chào mừng bạn mới! Bạn đã nhận được 10.000 xu.")
+async def bat_dau_phien(channel):
+    data = load_data()
+    if "lich_su" not in data:
+        data["lich_su"] = []
 
     data["game"] = {
         "trang_thai": "cho_dat_cuoc",
@@ -55,15 +59,15 @@ async def taixiu(ctx):
     }
     save_data(data)
 
-    await ctx.send("🎲 Trò chơi Tài Xỉu đã bắt đầu!\nBạn có 60 giây để đặt cược bằng cách dùng `.cuoc tai 10000` hoặc `.cuoc xiu 10k`")
+    view = discord.ui.View(timeout=None)
+    view.add_item(discord.ui.Button(label="🎯 Ra TÀI", style=discord.ButtonStyle.success, custom_id="tai"))
+    view.add_item(discord.ui.Button(label="🎯 Ra XỈU", style=discord.ButtonStyle.primary, custom_id="xiu"))
+    view.add_item(discord.ui.Button(label="💥 Chọn người nổ hũ", style=discord.ButtonStyle.danger, custom_id="nohu"))
 
-    # Gửi giao diện admin
-    if ctx.author.id == ADMIN_ID:
-        view = discord.ui.View()
-        view.add_item(discord.ui.Button(label="🎯 Ra TÀI", style=discord.ButtonStyle.success, custom_id="tai"))
-        view.add_item(discord.ui.Button(label="🎯 Ra XỈU", style=discord.ButtonStyle.primary, custom_id="xiu"))
-        view.add_item(discord.ui.Button(label="💥 Chọn người nổ hũ", style=discord.ButtonStyle.danger, custom_id="nohu"))
-        await ctx.send("👑 **Admin chọn kết quả**\nMặc định bot chọn: **TÀI**\nBạn có 40 giây để thay đổi bằng cách nhấn nút bên dưới.\n\nNếu không chọn gì, bot sẽ giữ kết quả mặc định.", view=view)
+    global game_message
+    cau = ' | '.join(data["lich_su"][-10:]) if data["lich_su"] else "Chưa có lịch sử"
+    embed = discord.Embed(title="🎲 BẮT ĐẦU PHIÊN MỚI", description="Dùng `.cuoc tai 10000` hoặc `.cuoc xiu 10k` để đặt cược\nMỗi phiên kéo dài **60 giây**\n\n💹 **Lịch sử cầu gần nhất:**\n" + cau, color=0x00ffcc)
+    game_message = await channel.send(embed=embed, view=view)
 
 async def xu_ly_tu_dong():
     while True:
@@ -78,7 +82,7 @@ async def xu_ly_tu_dong():
                 ket_qua = ep_kq if ep_kq in ["tai", "xiu"] else random.choice(["tai", "xiu"])
                 data["game"]["ket_qua"] = ket_qua
 
-                thong_bao = f"✅ Kết quả: **{ket_qua.upper()}**\n"
+                thong_bao = f"🎯 **KẾT QUẢ:** `{ket_qua.upper()}`\n"
                 for uid, thongtin in data["game"]["cuoc"].items():
                     tien = thongtin["tien"]
                     lua_chon = thongtin["lua_chon"]
@@ -89,15 +93,26 @@ async def xu_ly_tu_dong():
                     else:
                         thong_bao += f"<@{uid}> ❌ Thua -{tien} xu\n"
 
+                data["lich_su"].append(ket_qua.upper())
+                data["lich_su"] = data["lich_su"][-20:]  # giới hạn lịch sử 20 kết quả
                 save_data(data)
-                channel = discord.utils.get(bot.get_all_channels(), name="general")
+
+                if game_message:
+                    await game_message.reply(thong_bao)
+
+                await asyncio.sleep(2)
+                channel = game_message.channel if game_message else None
                 if channel:
-                    await channel.send(thong_bao)
+                    await bat_dau_phien(channel)
 
 @bot.command()
 async def cuoc(ctx, lua_chon: str, so_tien):
     data = load_data()
     user_id = str(ctx.author.id)
+
+    if user_id not in data:
+        data[user_id] = {"coin": 10000}
+
     so_tien = str(so_tien).lower().replace("k", "000")
     try:
         so_tien = int(so_tien)
@@ -132,7 +147,6 @@ async def daily(ctx):
 
     save_data(data)
 
-# Xử lý nút admin chọn
 @bot.event
 async def on_interaction(interaction):
     if interaction.user.id != ADMIN_ID:
@@ -153,8 +167,5 @@ async def on_interaction(interaction):
 
     save_data(data)
 
-# Khởi động server giữ bot online (Render ping)
 run()
-
-# Khởi chạy bot
 bot.run(TOKEN)
