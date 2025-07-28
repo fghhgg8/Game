@@ -1,5 +1,3 @@
-# bot.py
-
 import os
 import discord
 from discord.ext import commands, tasks
@@ -95,10 +93,16 @@ class BetModal(Modal):
 # ========== VIEW CƯỢC ==========
 
 class BetView(View):
-    def __init__(self):
+    def __init__(self, is_admin=False):
         super().__init__(timeout=None)
         self.add_item(Button(label="Cược Tài", style=ButtonStyle.green, custom_id="bet_tai"))
         self.add_item(Button(label="Cược Xỉu", style=ButtonStyle.red, custom_id="bet_xiu"))
+
+        if is_admin:
+            self.add_item(Button(label="💰 Ép Tài", style=ButtonStyle.blurple, custom_id="admin_force_tai"))
+            self.add_item(Button(label="💰 Ép Xỉu", style=ButtonStyle.blurple, custom_id="admin_force_xiu"))
+            self.add_item(Button(label="➕ Thêm Jackpot", style=ButtonStyle.gray, custom_id="admin_add_jackpot"))
+            self.add_item(Button(label="💥 Nổ Jackpot", style=ButtonStyle.danger, custom_id="admin_boom_jackpot"))
 
 # ========== GỬI BẢNG GAME ==========
 
@@ -111,10 +115,12 @@ async def send_or_update_game(ctx):
     embed.add_field(name="Tổng số người cược", value="0", inline=True)
     embed.add_field(name="Tổng xu Tài/Xỉu", value="0 / 0", inline=True)
 
+    is_admin = ctx.author.id == ADMIN_ID
+
     if game_message:
-        await game_message.edit(embed=embed, view=BetView())
+        await game_message.edit(embed=embed, view=BetView(is_admin))
     else:
-        game_message = await ctx.send(embed=embed, view=BetView())
+        game_message = await ctx.send(embed=embed, view=BetView(is_admin))
 
 # ========== VÒNG LẶP PHIÊN ==========
 
