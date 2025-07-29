@@ -1,3 +1,5 @@
+# bot.py
+
 import os
 import discord
 from discord.ext import commands, tasks
@@ -33,6 +35,8 @@ current_game = None
 is_game_active = True
 history = []
 game_message = None
+forced_result = None
+jackpot_amount = 0
 
 # ========== HELPER ==========
 
@@ -97,12 +101,11 @@ class BetView(View):
         super().__init__(timeout=None)
         self.add_item(Button(label="Cược Tài", style=ButtonStyle.green, custom_id="bet_tai"))
         self.add_item(Button(label="Cược Xỉu", style=ButtonStyle.red, custom_id="bet_xiu"))
-
         if is_admin:
-            self.add_item(Button(label="💰 Ép Tài", style=ButtonStyle.blurple, custom_id="admin_force_tai"))
-            self.add_item(Button(label="💰 Ép Xỉu", style=ButtonStyle.blurple, custom_id="admin_force_xiu"))
-            self.add_item(Button(label="➕ Thêm Jackpot", style=ButtonStyle.gray, custom_id="admin_add_jackpot"))
-            self.add_item(Button(label="💥 Nổ Jackpot", style=ButtonStyle.danger, custom_id="admin_boom_jackpot"))
+            self.add_item(Button(label="Ép Tài", style=ButtonStyle.blurple, custom_id="admin_force_tai"))
+            self.add_item(Button(label="Ép Xỉu", style=ButtonStyle.blurple, custom_id="admin_force_xiu"))
+            self.add_item(Button(label="+ Jackpot", style=ButtonStyle.gray, custom_id="admin_add_jackpot"))
+            self.add_item(Button(label="💥 Nổ Jackpot", style=ButtonStyle.green, custom_id="admin_trigger_jackpot"))
 
 # ========== GỬI BẢNG GAME ==========
 
@@ -110,27 +113,34 @@ async def send_or_update_game(ctx):
     global current_game, game_message
     current_game = {"bets": []}
 
+    bets = current_game["bets"]
+    total_tai = sum(b["amount"] for b in bets if b["side"] == "tài")
+    total_xiu = sum(b["amount"] for b in bets if b["side"] == "xỉu")
+    bettors = len(set(b["user_id"] for b in bets))
+
     embed = discord.Embed(title="🎲 BẢNG GAME TÀI/XỈU", color=0x00ff00)
     embed.add_field(name="Cầu 8 phiên gần nhất", value=generate_history_display(), inline=False)
-    embed.add_field(name="Tổng số người cược", value="0", inline=True)
-    embed.add_field(name="Tổng xu Tài/Xỉu", value="0 / 0", inline=True)
+    embed.add_field(name="Tổng số người cược", value=str(bettors), inline=True)
+    embed.add_field(name="Tổng xu Tài/Xỉu", value=f"{total_tai:,} / {total_xiu:,}", inline=True)
 
     is_admin = ctx.author.id == ADMIN_ID
+    view = BetView(is_admin=is_admin)
 
     if game_message:
-        await game_message.edit(embed=embed, view=BetView(is_admin))
+        await game_message.edit(embed=embed, view=view)
     else:
-        game_message = await ctx.send(embed=embed, view=BetView(is_admin))
+        game_message = await ctx.send(embed=embed, view=view)
 
 # ========== VÒNG LẶP PHIÊN ==========
 
 @tasks.loop(seconds=60)
 async def start_round():
-    global current_game
+    global current_game, forced_result, jackpot_amount
     if not is_game_active or not game_message:
         return
 
-    side = random.choice(["tài", "xỉu"])
+    side = forced_result if forced_result else random.choice(["tài", "xỉu"])
+    forced_result = None
     winners = []
     tax_total = 0
 
@@ -174,14 +184,32 @@ async def game(ctx):
 
 @bot.event
 async def on_interaction(interaction: Interaction):
-    global current_game
+    global current_game, forced_result, jackpot_amount
     if not interaction.data or not interaction.data.get("custom_id"):
         return
 
     cid = interaction.data["custom_id"]
+
     if cid.startswith("bet_"):
         side = "tài" if cid == "bet_tai" else "xỉu"
         await interaction.response.send_modal(BetModal(side, interaction.user.id))
+
+    elif interaction.user.id == ADMIN_ID:
+        if cid == "admin_force_tai":
+            forced_result = "tài"
+            await interaction.response.send_message("✅ Đã ép kết quả TÀI cho phiên này.", ephemeral=True)
+        elif cid == "admin_force_xiu":
+            forced_result = "xỉu"
+            await interaction.response.send_message("✅ Đã ép kết quả XỈU cho phiên này.", ephemeral=True)
+        elif cid == "admin_add_jackpot":
+            jackpot_amount += 10000
+            await interaction.response.send_message(f"💰 Đã thêm 10.000 vào jackpot. Tổng: {jackpot_amount:,} xu", ephemeral=True)
+        elif cid == "admin_trigger_jackpot":
+            await game_message.channel.send(f"💥 JACKPOT NỔ! Admin nhận {jackpot_amount:,} xu!")
+            ensure_user(ADMIN_ID)
+            user_data[ADMIN_ID]["balance"] += jackpot_amount
+            jackpot_amount = 0
+            await interaction.response.send_message("💥 Jackpot đã được kích hoạt!", ephemeral=True)
 
 # ========== LỆNH KHÁC ==========
 
